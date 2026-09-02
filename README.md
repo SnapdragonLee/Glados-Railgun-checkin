@@ -1,85 +1,79 @@
-# Glados自动签到
+# GLaDOS 自动签到（加固 Fork）
 
-## 食用方式：
+本分支基于 `Devilstore/Glados-Railgun-checkin`，面向自己的 GitHub Fork 运行。它只访问 `https://glados.one`，默认关闭积分兑换，并让 GitHub Actions 的成功/失败状态真实反映签到结果。
 
-### 注册一个GLaDOS的账号([注册地址](https://glados.space/landing/0A58E-NV28S-6U3QV-33VMG))
+## 与上游版本的关键差异
 
-#### 我的邀请码：([0A58E-NV28S-6U3QV-33VMG](https://0a58e-nv28s-6u3qv-33vmg.glados.space)) 
+- Cookie 只会发送给 `glados.one`；拒绝旧域名和 HTTP 重定向。
+- 签到失败后立即停止该账号的积分查询与兑换。
+- 自动兑换默认关闭；积分查询成功且达到阈值时才请求兑换。
+- `签到成功` 和 `今日已签到` 退出 0；签到失败或应兑换但兑换失败退出非 0。
+- 服务端错误响应正文不会进入 Actions 日志。
+- Actions 使用只读权限、并发锁和固定 SHA；移除了 keepalive、自动删除运行记录等无关步骤。
+- PushDeer 是可选通知，通知失败不会覆盖签到的真实结果。
 
-#### 我的优惠码（9折）：([DEVILSTORE](https://0a58e-nv28s-6u3qv-33vmg.glados.space)) 
+## 配置 GitHub Actions
 
-### **Fork**本仓库
+在自己的仓库进入 `Settings` → `Secrets and variables` → `Actions`。
 
-![图片加载失败](imgs/1.png)
+### 必需 Secret
 
-### 添加**secret**
+创建 `GLADOS_COOKIES`，值为 GLaDOS 请求中的完整 Cookie header，例如：
 
-1. 跳转至自己的仓库的`Settings`->`Secrets and variables`->`Action`
-
-2. 添加1个`repository secret`，命名为`GLADOS_COOKIES`，其值对应GLaDOS账号的cookie值中的有效部分（获取方式如下）
-
-- 在GLaDOS的签到页面按`F12`
-
-- 切换到`Network`页面下，刷新
-
-![图片加载失败](imgs/2.png)
-
-- 点击第一个选项卡后在`Request Headers`下找到`Cookie`，右键复制cookie的值即可
-
-  > 参考格式：koa:sess=eyJ1c2xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxAwMH0=; koa:sess.sig=xJkOxxxxxxxxxxxxxxxtnM;
-
-![图片加载失败](imgs/3.png)
-
-- 多账号请在 `COOKIES` 中 添加多个 `cookies` 中间使用 `&`连接即可。（例如： `c1&c3&c3...`）
-
-3. 配置积分兑换策略（非必须）
-
-- 添加1个`repository secret`，命名为`GLADOS_EXCHANGE_PLAN`，配置自动兑换积分策略：
-
-| 值 | 积分要求 | 兑换天数 |
-|---|---------|---------|
-| `plan100` | 100 积分 | 10 天 |
-| `plan200` | 200 积分 | 30 天 |
-| `plan500` | 500 积分 | 100 天 (默认) |
-
-> 不配置时默认为 `plan500`，即积分达到 500 时自动兑换 100 天
-
-4. 手机推送（非必须）
-
-- 添加1个`repository secret`，命名为`PUSHDEER_SENDKEY`，其值对应 PushDeer key: ([获取地址](https://www.pushdeer.com/product.html))。
-
-### **star**自己的仓库
-
-![图片加载失败](imgs/4.png)
-
-## 文件结构
-
-```shell
-│  checkin.py	# 签到脚本
-│
-├─.github
-│  └─workflows
-│          gladosCheck.yml	# Actions 配置文件
+```text
+koa:sess=...; koa:sess.sig=...;
 ```
 
-## 更新日志
+多账号继续使用 `&` 分隔：
 
-- **2026-01**: 重构代码，添加log输出方便定位，支持新版网址，支持配置积分兑换策略。
-- **2026-04**: 优化代码逻辑，优化日志输出，支持[新版域名](https://railgun.info) ，在 GLADOS_COOKIES 中添加新版域名下的 cookies 即可使用。
+```text
+cookie-for-account-1&cookie-for-account-2
+```
 
+Cookie 等同于登录凭据。不要把它提交到 Git、复制到 Issue，或粘贴到 Actions 日志。
 
-## 问题排查与定位
-- 大家可以通过查询 actions 中的 running checkin 日志快速定位问题，有其他问题提交issue。
+### 自动兑换
 
-  <img width="1684" height="844" alt="image" src="https://github.com/user-attachments/assets/45348a5f-43e4-45f5-8fdf-ce84d343b30d" />
+创建 repository variable `GLADOS_EXCHANGE_PLAN`。可选值：
 
-## 声明
+| 值 | 行为 |
+|---|---|
+| `off` | 关闭自动兑换（默认） |
+| `plan100` | 达到 100 积分后兑换 10 天 |
+| `plan200` | 达到 200 积分后兑换 30 天 |
+| `plan500` | 达到 500 积分后兑换 100 天 |
 
-本项目不保证稳定运行与更新, 因GitHub相关规定可能会删库, 请注意备份
+要启用 500 积分兑换，明确设置为 `plan500`。脚本会先读取积分，只有 `points >= 500` 才发送一次兑换请求。Actions 的 `concurrency` 会避免定时与手动运行并发。
 
+### 可选配置
 
+- Secret `PUSHDEER_SENDKEY`：PushDeer key；不配置则只看 Actions 结果。
+- Variable `GLADOS_VERBOSE`：`true` 或 `false`，默认 `false`。
 
+## 运行时间与触发规则
 
+- 定时：UTC 01:17 / 07:17，即北京时间 09:17 / 15:17。
+- 手动：Actions 页面运行 `GLaDOS check-in`。
+- Push / Pull Request：只运行单元测试，不读取 Cookie，也不进行真实签到。
 
+第二次定时运行是补偿任务；若当天已签到，脚本把 `今日已签到` 视为成功。
 
+## 本地测试
 
+```bash
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements-dev.txt
+.venv/bin/python -m pytest -q
+```
+
+不要用真实 Cookie 运行测试。测试使用假 API，不访问 GLaDOS。
+
+## 分支与上游同步
+
+本仓库把原项目记为 `upstream`，自己的 GitHub Fork 记为 `origin`。我们自己的功能提交保留在独立分支中；上游变化先审查，再按需要 merge 或 cherry-pick，不自动覆盖本分支。
+
+完整流程见 [docs/upstream-sync.md](docs/upstream-sync.md)。
+
+## 许可证
+
+沿用上游项目的 GPL-3.0 许可证，见 [LICENSE](LICENSE)。

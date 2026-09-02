@@ -24,3 +24,7 @@ logs
 build/
 dist/
 *.egg-info/
+
+# Local development
+.venv/
+.pytest_cache/
