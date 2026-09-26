@@ -74,6 +74,48 @@ def test_request_refuses_redirect_and_does_not_log_response_body(caplog):
     assert secret_body not in caplog.text
 
 
+def test_checkin_matches_successful_browser_request():
+    api = checkin.API("glados.one")
+    captured = {}
+
+    class FakeSession:
+        def request(self, method, url, **kwargs):
+            captured.update(method=method, url=url, **kwargs)
+            return SimpleNamespace(status_code=200, ok=True)
+
+        def close(self):
+            pass
+
+    api.session = FakeSession()
+    api._make_request("/api/user/checkin", "POST", {"token": "glados.one"}, "cookie")
+
+    assert api.headers["user-agent"].startswith("Mozilla/5.0 (Macintosh;")
+    assert api.headers["accept"] == "application/json, text/plain, */*"
+    assert captured["data"] == '{"token":"glados.one"}'
+    assert captured["headers"]["content-type"] == "application/json;charset=UTF-8"
+    assert "json" not in captured
+    assert captured["allow_redirects"] is False
+
+
+def test_exchange_keeps_form_data():
+    api = checkin.API("glados.one")
+    captured = {}
+
+    class FakeSession:
+        def request(self, method, url, **kwargs):
+            captured.update(method=method, url=url, **kwargs)
+            return SimpleNamespace(status_code=200, ok=True)
+
+        def close(self):
+            pass
+
+    api.session = FakeSession()
+    api._make_request("/api/user/exchange", "POST", {"planType": "plan500"}, "cookie")
+
+    assert captured["data"] == {"planType": "plan500"}
+    assert "content-type" not in captured["headers"]
+
+
 class FakeAPI:
     status = ("365 天", 0)
     checkin_result = {

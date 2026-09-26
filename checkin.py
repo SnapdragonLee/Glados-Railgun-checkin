@@ -171,8 +171,15 @@ class API:
         self.verbose = verbose
         self.headers = {
             "origin": f"https://{domain}",
-            "referer": f"https://{domain}/console/checkin",
-            "user-agent": "GLaDOS-checkin/1.0 (+GitHub Actions)",
+            "accept": "application/json, text/plain, */*",
+            "user-agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/153.0.0.0 Safari/537.36"
+            ),
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
         }
         self.session = requests.Session()
         self.session.headers.update(self.headers)
@@ -221,13 +228,17 @@ class API:
     ) -> Optional[requests.Response]:
         url = self._get_full_url(path)
         request_headers = {"cookie": cookies}
+        request_data = data
+        if method.upper() == "POST" and path == APIEndpoint.CHECKIN.value:
+            request_headers["content-type"] = "application/json;charset=UTF-8"
+            request_data = json.dumps(data, separators=(",", ":"))
 
         try:
             response = self.session.request(
                 method.upper(),
                 url,
                 headers=request_headers,
-                data=data,
+                data=request_data,
                 timeout=(self.CONNECT_TIMEOUT, self.READ_TIMEOUT),
                 allow_redirects=False,
             )
@@ -279,6 +290,7 @@ class API:
                 "message": message,
                 "code": CheckinStatus.REPEAT,
             }
+        self._log("error", LogEmoji.ERROR, f"签到 API code={code}", force=True)
         return {
             "status": "签到失败",
             "points": "0",

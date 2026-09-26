@@ -18,10 +18,10 @@
 
 ### GLADOS_COOKIES
 
-创建 repository secret `GLADOS_COOKIES`，填写 GLaDOS 请求中的完整 Cookie：
+创建 repository secret `GLADOS_COOKIES`，填写登录后 `glados.one/api/user/checkin` 请求头中的完整 Cookie。当前网页会话包含以下字段：
 
 ```text
-koa:sess=...; koa:sess.sig=...;
+gld:sess=...; gld:sess.sig=...; koa:sess=...; koa:sess.sig=...;
 ```
 
 多账号使用 `&` 分隔：
