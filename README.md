@@ -2,6 +2,8 @@
 
 基于 GitHub Actions 的 GLaDOS 自动签到方案，支持 `glados.one`、`glados.cloud`、`railgun.info`、多账号、积分兑换、PushDeer 通知和运行状态检查。
 
+改动重点、验证结果及对应 PR 见 [变更日志](CHANGELOG.md)。
+
 ## 功能
 
 - 每天北京时间 09:17 和 15:17 自动运行
