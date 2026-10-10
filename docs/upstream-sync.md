@@ -57,8 +57,14 @@ git cherry-pick <reviewed-upstream-commit>
 解决冲突后必须重新运行：
 
 ```bash
-.venv/bin/python -m pytest -q
+/opt/miniconda3/envs/free/bin/python -m pytest -q
 git diff --check
 ```
 
 确认测试和 diff 后，才推送到自己的 `origin`。不要使用 `git reset --hard` 追平上游，因为那会丢弃自己的提交历史。
+
+## 已移植的设备匹配逻辑
+
+签到设备平台匹配逻辑参考上游提交 `ee22e8c480950185df095d80f36cf72af4a52c91`（2026-09-29）。仅在服务端返回 `code=4`、`reason=device-mismatch`、已知 `loginDevice` 时匹配平台，并最多重试一次。
+
+本 fork 保留签到 JSON 请求、运行域名配置、Cookie 接收方白名单、拒绝重定向、仅 GET 网络重试、兑换门槛和业务失败非零退出码。每份 Cookie 每轮最多尝试一次兑换。
