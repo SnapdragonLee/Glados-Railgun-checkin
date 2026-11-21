@@ -4,6 +4,8 @@
 
 改动重点、验证结果及对应 PR 见 [变更日志](CHANGELOG.md)。
 
+当前运行方式（2026-11-21）：本仓库 Actions 工作流已暂停。补齐 challenge 协议后的实测仍被 Turnstile 拒绝，日常签到改为打开 [官网签到页](https://glados.one/console/checkin)，在网页中完成验证并确认签到结果。以下 Actions 配置保留供后续恢复自动化时使用。
+
 ## 功能
 
 - 每天北京时间 09:17 和 15:17 自动运行
