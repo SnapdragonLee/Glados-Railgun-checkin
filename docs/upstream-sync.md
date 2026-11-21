@@ -70,3 +70,11 @@ git diff --check
 本 fork 保留签到 JSON 请求、运行域名配置、Cookie 接收方白名单、拒绝重定向、仅 GET 网络重试、兑换门槛和业务失败非零退出码。每份 Cookie 每轮最多尝试一次兑换。
 
 本次集成见 [PR #3](https://github.com/SnapdragonLee/Glados-Railgun-checkin/pull/3)，域名实测与运行列表记录见 [变更日志](../CHANGELOG.md)。
+
+## 已移植的 challenge 协议与结果判定
+
+参考上游 `7bdf82255532dd1317aadde594244b743d408763`（challenge 请求、等待 2.5 秒、SHA-256 proof）和 `4d3e1e5baea76086c43d7c02c2401b5639d2d715`（`repeated`/`checkedIn` 判定、本次积分解析）。设备恢复的第二次请求重新获取 challenge，并保持同一个 Cookie 和对应平台 UA。
+
+本 fork 在 challenge 失败时停止该域名的签到，保留脱敏失败原因。明确的业务拒绝优先于矛盾的重复签到标记；`repeated=true` 与 `code=0` 的响应按重复签到处理，防止触发兑换。nonce 和 proof 仅保留在请求内存中，并参与错误文本脱敏。
+
+此次移植包含上游已合并的 Python 协议逻辑。服务端要求 Turnstile 时仍需在官网完成验证，脚本保留非零退出码并提示手动签到。

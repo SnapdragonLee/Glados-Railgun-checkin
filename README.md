@@ -67,6 +67,10 @@ cookie-for-account-1&cookie-for-account-2
 - 排查失败：查看 Actions 的错误注解、运行摘要中的 API code 和脱敏原因
 - 积分兑换：成功签到且达到门槛才兑换；今日已签到不兑换，每份 Cookie 每轮最多尝试一次兑换
 
+签到前先获取 challenge，等待 2.5 秒后携带 `nonce` 和 `proof` 提交 JSON。challenge 获取失败时停止该域名的签到，并在 Actions 中保留原因。设备平台恢复会重新获取 challenge。
+
+`repeated=true` 的响应记为今日已签到，即使 `code=0` 也跳过兑换。返回 `code=5` 或 `reason=turnstile` 时，需要在官网浏览器完成验证并手动签到；脚本报告失败。`code=-2` 的认证失败应重新登录并更新 Cookie。
+
 ## 本地测试
 
 ```bash
