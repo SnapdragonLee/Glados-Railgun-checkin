@@ -23,6 +23,11 @@ def clean_environment(monkeypatch):
         monkeypatch.delenv(name, raising=False)
 
 
+@pytest.fixture
+def ready_challenge(monkeypatch):
+    monkeypatch.setattr(checkin.API, "_checkin_challenge", lambda *args: {"nonce": "fixture-nonce", "proof": "fixture-proof"})
+
+
 def test_config_defaults_to_single_domain_and_exchange_off(monkeypatch):
     monkeypatch.setenv("GLADOS_COOKIES", "cookie-one & cookie-two")
 
@@ -261,7 +266,7 @@ def test_repeat_checkin_never_triggers_exchange(monkeypatch):
     assert checker.has_failures() is False
 
 
-def test_api_accepts_string_codes(monkeypatch):
+def test_api_accepts_string_codes(monkeypatch, ready_challenge):
     class FakeResponse:
         ok = True
         status_code = 200
@@ -319,7 +324,7 @@ def response(payload):
     return SimpleNamespace(status_code=200, ok=True, json=lambda: payload)
 
 
-def test_device_mismatch_retries_once_and_reuses_matched_platform(monkeypatch):
+def test_device_mismatch_retries_once_and_reuses_matched_platform(monkeypatch, ready_challenge):
     api = checkin.API("glados.one")
     responses = iter([
         {"code": "4", "reason": "device-mismatch", "loginDevice": "Windows", "message": "Automated check-in detected"},
@@ -348,7 +353,7 @@ def test_device_mismatch_retries_once_and_reuses_matched_platform(monkeypatch):
     {"code": 4, "reason": "device-mismatch", "loginDevice": "macOS"},
     {"code": -2, "reason": "device-mismatch", "loginDevice": "Windows"},
 ])
-def test_other_rejections_are_not_retried(monkeypatch, payload):
+def test_other_rejections_are_not_retried(monkeypatch, payload, ready_challenge):
     api = checkin.API("glados.one")
     calls = []
     monkeypatch.setattr(api, "_make_request", lambda *args, **kwargs: calls.append(kwargs) or response(payload))
@@ -358,7 +363,7 @@ def test_other_rejections_are_not_retried(monkeypatch, payload):
     assert result["api_code"] == payload["code"]
 
 
-def test_second_device_rejection_preserves_reason_and_stops(monkeypatch):
+def test_second_device_rejection_preserves_reason_and_stops(monkeypatch, ready_challenge):
     api = checkin.API("glados.one")
     calls = []
     payload = {"code": 4, "reason": "device-mismatch", "loginDevice": "Windows", "message": "Please sign in again"}
@@ -403,7 +408,7 @@ def test_exchange_is_attempted_once_per_cookie_across_domains(monkeypatch):
     assert checker.results[1].exchange == "未兑换: 本轮该 Cookie 已尝试兑换"
 
 
-def test_diagnostics_redact_session_values_and_account_data(monkeypatch, caplog):
+def test_diagnostics_redact_session_values_and_account_data(monkeypatch, caplog, ready_challenge):
     secret = "session-private-value"
     cookie = f"gld:sess={secret}; gld:sess.sig=private-signature"
     api = checkin.API("glados.one")
@@ -417,7 +422,7 @@ def test_diagnostics_redact_session_values_and_account_data(monkeypatch, caplog)
     assert "code=4" in result["message"]
 
 
-def test_invalid_payload_becomes_sanitized_failure(monkeypatch):
+def test_invalid_payload_becomes_sanitized_failure(monkeypatch, ready_challenge):
     api = checkin.API("glados.one")
     monkeypatch.setattr(api, "_make_request", lambda *args, **kwargs: response(["private-response"]))
     result = api.checkin("cookie")
@@ -544,3 +549,183 @@ def test_configuration_error_has_actions_annotation(monkeypatch, capsys):
     monkeypatch.setattr(checkin.PushService, "send", lambda *args, **kwargs: False)
     assert checkin.main() == 1
     assert "::error title=GLaDOS 运行失败::" in capsys.readouterr().out
+
+
+def test_challenge_is_fetched_waited_and_submitted_with_cookie_and_same_ua(monkeypatch):
+    calls = []
+    events = []
+    payload = {"code": 0, "nonce": "example-challenge-nonce"}
+
+    def request(self, method, url, **kwargs):
+        calls.append((method, url, kwargs))
+        events.append(method)
+        return response(payload if method == "GET" else {"code": 0, "repeated": False, "points": 5})
+
+    monkeypatch.setattr(checkin.requests.Session, "request", request)
+    monkeypatch.setattr(checkin.time, "sleep", lambda duration: events.append(("wait", duration)))
+    with checkin.API("glados.one") as api:
+        result = api.checkin("synthetic-session")
+    assert events == ["GET", ("wait", 2.5), "POST"]
+    assert calls[0][1] == "https://glados.one/api/user/checkin/challenge"
+    assert calls[1][1] == "https://glados.one/api/user/checkin"
+    assert all(call[2]["headers"]["cookie"] == "synthetic-session" for call in calls)
+    assert calls[0][2]["headers"]["user-agent"] == calls[1][2]["headers"]["user-agent"]
+    assert all(call[2]["allow_redirects"] is False for call in calls)
+    assert checkin.json.loads(calls[1][2]["data"]) == {
+        "token": "glados.one", "nonce": "example-challenge-nonce",
+        "proof": "ffda517101f12c7cdd7791eab42f8b5acae5f1a796f099b53361d9bf9ec8481b",
+    }
+    assert result["code"] == checkin.CheckinStatus.SUCCESS
+    assert result["points"] == "5"
+    assert result["attempts"] == 1
+
+
+@pytest.mark.parametrize("payload", [
+    {"code": 0}, {"code": 0, "nonce": ""}, {"code": 0, "nonce": 3},
+    {"code": -2, "message": "没有权限"}, {"code": 5, "reason": "turnstile"}, [],
+])
+def test_invalid_challenge_never_submits_checkin(monkeypatch, payload):
+    calls = []
+    monkeypatch.setattr(checkin.API, "_make_request", lambda self, path, method, **kwargs: calls.append((path, method)) or response(payload))
+    with checkin.API("glados.one") as api:
+        result = api.checkin("synthetic-session")
+    assert calls == [("/api/user/checkin/challenge", "GET")]
+    assert result["code"] == checkin.CheckinStatus.FAILURE
+    assert result["attempts"] == 0
+    assert "challenge" in result["message"]
+
+
+def test_unavailable_challenge_preserves_http_error_and_skips_post(monkeypatch):
+    def request(self, *args, **kwargs):
+        self.last_error = "HTTP 503"
+        return None
+
+    monkeypatch.setattr(checkin.API, "_make_request", request)
+    with checkin.API("glados.one") as api:
+        result = api.checkin("synthetic-session")
+    assert result["attempts"] == 0
+    assert result["message"] == "获取签到 challenge 失败: HTTP 503"
+
+
+def test_device_recovery_gets_new_challenge_for_matched_ua(monkeypatch):
+    calls = []
+    nonces = iter(["first-nonce", "second-nonce"])
+    rejections = iter([
+        {"code": 4, "reason": "device-mismatch", "loginDevice": "Windows"},
+        {"code": 0, "repeated": True},
+    ])
+
+    def request(self, path, method, data=None, cookies="", user_agent=None):
+        calls.append((method, user_agent, data))
+        return response({"code": 0, "nonce": next(nonces)} if method == "GET" else next(rejections))
+
+    monkeypatch.setattr(checkin.API, "_make_request", request)
+    monkeypatch.setattr(checkin.time, "sleep", lambda *args: None)
+    with checkin.API("glados.one") as api:
+        result = api.checkin("synthetic-session")
+    assert [call[0] for call in calls] == ["GET", "POST", "GET", "POST"]
+    assert [call[1] for call in calls] == [checkin.PLATFORM_UA["macOS"]] * 2 + [checkin.PLATFORM_UA["Windows"]] * 2
+    assert calls[1][2]["nonce"] == "first-nonce"
+    assert calls[3][2]["nonce"] == "second-nonce"
+    assert calls[1][2]["proof"] != calls[3][2]["proof"]
+    assert result["code"] == checkin.CheckinStatus.REPEAT
+    assert result["attempts"] == 2
+
+
+@pytest.mark.parametrize("payload,expected", [
+    ({"code": "0", "repeated": True}, checkin.CheckinStatus.REPEAT),
+    ({"code": 0, "repeated": False}, checkin.CheckinStatus.SUCCESS),
+    ({"code": 1, "repeated": False}, checkin.CheckinStatus.FAILURE),
+    ({"checkedIn": True}, checkin.CheckinStatus.REPEAT),
+    ({"code": 0, "message": "please checkin via https://example.invalid"}, checkin.CheckinStatus.FAILURE),
+    ({"code": 5, "reason": "turnstile", "repeated": True}, checkin.CheckinStatus.FAILURE),
+    ({"code": -2, "checkedIn": True}, checkin.CheckinStatus.FAILURE),
+])
+def test_current_result_contract(monkeypatch, ready_challenge, payload, expected):
+    monkeypatch.setattr(checkin.API, "_make_request", lambda *args, **kwargs: response(payload))
+    with checkin.API("glados.one") as api:
+        result = api.checkin("synthetic-session")
+    assert result["code"] == expected
+
+
+@pytest.mark.parametrize("fields,expected", [
+    ({"points": "5", "list": [{"change": 100}]}, "5"),
+    ({"list": [{"change": "4"}]}, "4"),
+    ({"points": "invalid", "list": [{"change": 3}]}, "3"),
+    ({"list": []}, "0"),
+])
+def test_points_use_current_award_then_record_fallback(monkeypatch, ready_challenge, fields, expected):
+    monkeypatch.setattr(checkin.API, "_make_request", lambda *args, **kwargs: response({"code": 0, **fields}))
+    with checkin.API("glados.one") as api:
+        assert api.checkin("synthetic-session")["points"] == expected
+
+
+def test_repeated_flag_with_code_zero_cannot_trigger_exchange(monkeypatch, ready_challenge):
+    calls = []
+
+    def request(self, path, method, *args, **kwargs):
+        calls.append((path, method))
+        return response({
+            "/api/user/status": {"code": 0, "data": {"leftDays": 365}},
+            "/api/user/checkin": {"code": 0, "repeated": True, "points": 0},
+            "/api/user/points": {"points": 1000},
+        }[path])
+
+    monkeypatch.setattr(checkin.API, "_make_request", request)
+    checker = checkin.Checker(make_config("plan500"))
+    checker.checkin_all()
+    assert checker.results[0].code == checkin.CheckinStatus.REPEAT
+    assert checker.has_failures() is False
+    assert all(path != "/api/user/exchange" for path, _ in calls)
+
+
+def test_turnstile_failure_has_manual_hint_and_redacts_challenge(monkeypatch, caplog):
+    captured = {}
+
+    def request(self, path, method, data=None, cookies="", **kwargs):
+        if method == "GET":
+            return response({"code": 0, "nonce": "short-nonce"})
+        captured.update(data)
+        return response({"code": 5, "reason": "turnstile", "message": f"short-nonce {data['proof']} synthetic-session"})
+
+    monkeypatch.setattr(checkin.API, "_make_request", request)
+    monkeypatch.setattr(checkin.time, "sleep", lambda *args: None)
+    with checkin.API("glados.one") as api:
+        result = api.checkin("synthetic-session")
+    assert result["code"] == checkin.CheckinStatus.FAILURE
+    assert "手动签到" in result["message"]
+    assert "reason=turnstile" in result["message"]
+    for secret in ("short-nonce", captured["proof"], "synthetic-session"):
+        assert secret not in result["message"]
+        assert secret not in caplog.text
+
+
+@pytest.mark.parametrize("failed_endpoint", ["/api/user/points", "/api/user/exchange"])
+def test_later_api_errors_redact_challenge_in_all_outputs(monkeypatch, tmp_path, capsys, caplog, failed_endpoint):
+    nonce = "short-nonce"
+    proof = checkin.hashlib.sha256(f"{nonce}.glados-observe-v1".encode()).hexdigest()
+
+    def request(self, path, method, *args, **kwargs):
+        if path == failed_endpoint:
+            return response({"code": 4, "reason": nonce, "message": f"{nonce} {proof} synthetic-session"})
+        return response({
+            "/api/user/status": {"code": 0, "data": {"leftDays": 365}},
+            "/api/user/checkin/challenge": {"code": 0, "nonce": nonce},
+            "/api/user/checkin": {"code": 0, "repeated": False, "points": 5},
+            "/api/user/points": {"points": 1000},
+        }[path])
+
+    monkeypatch.setattr(checkin.API, "_make_request", request)
+    monkeypatch.setattr(checkin.time, "sleep", lambda *args: None)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    summary = tmp_path / "summary.md"
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
+    config = make_config("plan500")
+    config.cookies_list = ["synthetic-session"]
+    checker = checkin.Checker(config)
+    checker.checkin_all()
+    checker.report_actions()
+    assert checker.has_failures()
+    outputs = caplog.text + summary.read_text() + capsys.readouterr().out + checker.format_results()[1]
+    for secret in (nonce, proof, "synthetic-session"):
+        assert secret not in outputs

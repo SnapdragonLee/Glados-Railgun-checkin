@@ -1,6 +1,8 @@
+import hashlib
 import json
 import os
 import re
+import time
 from dataclasses import asdict, dataclass
 from enum import Enum
 from pathlib import Path
@@ -35,6 +37,7 @@ class APIEndpoint(Enum):
     """GLaDOS API 端点。"""
 
     CHECKIN = "/api/user/checkin"
+    CHECKIN_CHALLENGE = "/api/user/checkin/challenge"
     STATUS = "/api/user/status"
     POINTS = "/api/user/points"
     EXCHANGE = "/api/user/exchange"
@@ -65,6 +68,9 @@ PLATFORM_UA = {
     "Android": "Mozilla/5.0 (Linux; Android 13; Pixel 7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Mobile Safari/537.36",
 }
 
+CHALLENGE_SUFFIX = "glados-observe-v1"
+CHALLENGE_DELAY_SECONDS = 2.5
+
 
 def safe_text(value: object, cookies: str = "", secrets: Tuple[str, ...] = ()) -> str:
     """只保留有限的诊断文本，屏蔽会话、邮箱、URL 和控制字符。"""
@@ -85,12 +91,16 @@ def safe_text(value: object, cookies: str = "", secrets: Tuple[str, ...] = ()) -
     return text.strip()[:240]
 
 
-def api_diagnostic(payload: Dict, cookies: str = "") -> str:
+def api_diagnostic(payload: Dict, cookies: str = "", secrets: Tuple[str, ...] = ()) -> str:
     code = int(payload.get("code", -2))
-    reason = safe_text(payload.get("reason", ""), cookies)
+    reason = safe_text(payload.get("reason", ""), cookies, secrets)
     device = payload.get("loginDevice")
-    message = safe_text(payload.get("message", "无消息字段"), cookies)
-    if code == -2 and any(term in message.lower() for term in ("没有权限", "no permission", "unauthorized", "未登录")):
+    message = safe_text(payload.get("message", "无消息字段"), cookies, secrets)
+    if payload.get("reason") == "turnstile" or code == 5:
+        hint = "需要在官网浏览器完成 Cloudflare 验证并手动签到"
+    elif "please checkin via" in str(payload.get("message", "")).lower():
+        hint = "服务端拒绝当前签到域名，请核对 Cookie 所属域名"
+    elif code == -2 and any(term in message.lower() for term in ("没有权限", "no permission", "unauthorized", "未登录")):
         hint = "认证失败，请在该域名重新登录并更新对应 Cookie"
     elif code == 4 and payload.get("reason") == "device-mismatch":
         hint = "登录设备与请求平台不匹配"
@@ -138,6 +148,8 @@ def log_method(func):
                     "points": "0",
                     "message": "响应解析失败",
                     "code": CheckinStatus.FAILURE,
+                    "api_code": self.last_api_code,
+                    "attempts": self.checkin_attempts,
                 },
                 "get_status": ("None 天", -2),
                 "get_points": ("None 积分", None),
@@ -236,6 +248,8 @@ class API:
         self.verbose = verbose
         self.last_error = ""
         self.last_api_code: Optional[int] = None
+        self.checkin_attempts = 0
+        self.challenge_secrets: Tuple[str, ...] = ()
         self.headers = {
             "origin": f"https://{domain}",
             "accept": "application/json, text/plain, */*",
@@ -331,11 +345,48 @@ class API:
             return None
         return response
 
+    def _checkin_challenge(self, cookies: str, user_agent: str) -> Optional[Dict[str, str]]:
+        response = self._make_request(
+            APIEndpoint.CHECKIN_CHALLENGE.value, "GET", cookies=cookies, user_agent=user_agent
+        )
+        if response is None:
+            self.last_error = f"获取签到 challenge 失败: {self.last_error}"
+            return None
+        try:
+            data = response.json()
+            if not isinstance(data, dict):
+                raise ValueError("challenge 响应不是 JSON 对象")
+            code = int(data.get("code", -2))
+        except (AttributeError, TypeError, ValueError) as exc:
+            self.last_error = f"签到 challenge 响应解析失败: {type(exc).__name__}"
+            return None
+
+        self.last_api_code = code
+        nonce = data.get("nonce")
+        if isinstance(nonce, str) and nonce:
+            self.challenge_secrets += (nonce,)
+        if code != 0:
+            self.last_error = "获取签到 challenge 失败: " + api_diagnostic(data, cookies, self.challenge_secrets)
+            return None
+        if not isinstance(nonce, str) or not nonce.strip():
+            self.last_error = "签到 challenge 缺少有效 nonce，未发送签到请求"
+            return None
+
+        time.sleep(CHALLENGE_DELAY_SECONDS)
+        proof = hashlib.sha256(f"{nonce}.{CHALLENGE_SUFFIX}".encode()).hexdigest()
+        self.challenge_secrets += (proof,)
+        self._log("info", LogEmoji.INFO, "已获取签到 challenge，按新协议提交", force=True)
+        return {"nonce": nonce, "proof": proof}
+
     def _checkin_attempt(self, cookies: str, user_agent: str) -> Optional[Dict]:
+        challenge = self._checkin_challenge(cookies, user_agent)
+        if challenge is None:
+            return None
+        self.checkin_attempts += 1
         response = self._make_request(
             APIEndpoint.CHECKIN.value,
             "POST",
-            {"token": self.domain},
+            {"token": self.domain, **challenge},
             cookies,
             user_agent=user_agent,
         )
@@ -348,17 +399,17 @@ class API:
 
     @log_method
     def checkin(self, cookies: str) -> Dict[str, Union[str, int, CheckinStatus, None]]:
+        self.checkin_attempts = 0
+        self.challenge_secrets = ()
         user_agent = self.headers["user-agent"]
         data = self._checkin_attempt(cookies, user_agent)
-        attempts = 1
         if data is not None and int(data.get("code", -2)) == 4 and data.get("reason") == "device-mismatch":
             login_device = data.get("loginDevice")
             recovery_ua = PLATFORM_UA.get(login_device) if isinstance(login_device, str) else None
             if recovery_ua and recovery_ua != user_agent:
                 self._log("warning", LogEmoji.WARNING, f"登录设备为 {login_device}，匹配平台后重试一次", force=True)
                 data = self._checkin_attempt(cookies, recovery_ua)
-                attempts = 2
-                if data is not None and int(data.get("code", -2)) in (0, 1):
+                if data is not None and self._checkin_status(data) in (CheckinStatus.SUCCESS, CheckinStatus.REPEAT):
                     self.headers["user-agent"] = recovery_ua
                     self.session.headers.update({"user-agent": recovery_ua})
                     self.query_session.headers.update({"user-agent": recovery_ua})
@@ -369,22 +420,23 @@ class API:
                 "points": "0",
                 "message": self.last_error or "网络或 HTTP 请求失败",
                 "code": CheckinStatus.FAILURE,
-                "api_code": None,
-                "attempts": attempts,
+                "api_code": self.last_api_code,
+                "attempts": self.checkin_attempts,
             }
 
         code = int(data.get("code", CheckinStatus.FAILURE.value))
-        message = safe_text(data.get("message", "无消息字段"), cookies)
-        points = safe_text(data.get("points", 0), cookies)
+        message = safe_text(data.get("message", "无消息字段"), cookies, self.challenge_secrets)
+        points = str(self._earned_points(data))
         self.last_api_code = code
         diagnostic = {
             "api_code": code,
-            "attempts": attempts,
-            "reason": safe_text(data.get("reason", ""), cookies),
+            "attempts": self.checkin_attempts,
+            "reason": safe_text(data.get("reason", ""), cookies, self.challenge_secrets),
             "login_device": data.get("loginDevice") if isinstance(data.get("loginDevice"), str) and data.get("loginDevice") in PLATFORM_UA else "",
         }
 
-        if code == CheckinStatus.SUCCESS.value:
+        status = self._checkin_status(data)
+        if status == CheckinStatus.SUCCESS:
             return {
                 "status": "签到成功",
                 "points": points,
@@ -392,7 +444,7 @@ class API:
                 "code": CheckinStatus.SUCCESS,
                 **diagnostic,
             }
-        if code == CheckinStatus.REPEAT.value:
+        if status == CheckinStatus.REPEAT:
             return {
                 "status": "今日已签到",
                 "points": "0",
@@ -400,7 +452,7 @@ class API:
                 "code": CheckinStatus.REPEAT,
                 **diagnostic,
             }
-        self.last_error = api_diagnostic(data, cookies)
+        self.last_error = api_diagnostic(data, cookies, self.challenge_secrets)
         self._log("error", LogEmoji.ERROR, self.last_error, force=True)
         return {
             "status": "签到失败",
@@ -409,6 +461,41 @@ class API:
             "code": CheckinStatus.FAILURE,
             **diagnostic,
         }
+
+    @staticmethod
+    def _checkin_status(data: Dict) -> CheckinStatus:
+        code = int(data.get("code", -2))
+        message = str(data.get("message", "")).lower()
+        if "please checkin via" in message or data.get("reason") in {"device-mismatch", "turnstile"}:
+            return CheckinStatus.FAILURE
+        # 明确的业务拒绝优先于矛盾的 repeated/checkedIn 标记。
+        if "code" in data and code not in (0, 1):
+            return CheckinStatus.FAILURE
+        repeated = data.get("repeated")
+        if isinstance(repeated, bool):
+            if repeated:
+                return CheckinStatus.REPEAT
+            return CheckinStatus.SUCCESS if code == 0 else CheckinStatus.FAILURE
+        if code == 0:
+            return CheckinStatus.SUCCESS
+        if code == 1 or data.get("checkedIn") is True:
+            return CheckinStatus.REPEAT
+        return CheckinStatus.FAILURE
+
+    @staticmethod
+    def _earned_points(data: Dict) -> int:
+        candidates = [data.get("points")]
+        records = data.get("list")
+        if isinstance(records, list) and records and isinstance(records[0], dict):
+            candidates.append(records[0].get("change"))
+        for value in candidates:
+            if isinstance(value, bool):
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+        return 0
 
     @log_method
     def get_status(self, cookies: str) -> Tuple[str, int]:
@@ -422,7 +509,7 @@ class API:
         status_data = data.get("data")
         left_days = status_data.get("leftDays") if isinstance(status_data, dict) else None
         if code != 0:
-            self.last_error = api_diagnostic(data, cookies)
+            self.last_error = api_diagnostic(data, cookies, self.challenge_secrets)
             self._log("error", LogEmoji.ERROR, self.last_error, force=True)
             return "None 天", code
         if left_days is None:
@@ -439,7 +526,7 @@ class API:
         data = response.json()
         self.last_api_code = int(data["code"]) if "code" in data else None
         if "code" in data and int(data["code"]) != 0:
-            self.last_error = api_diagnostic(data, cookies)
+            self.last_error = api_diagnostic(data, cookies, self.challenge_secrets)
             self._log("error", LogEmoji.ERROR, self.last_error, force=True)
             return "None 积分", None
         points = data.get("points")
@@ -463,7 +550,7 @@ class API:
         data = response.json()
         if int(data.get("code", -2)) == 0:
             return f"兑换成功: {plan}", True
-        self.last_error = api_diagnostic(data, cookies)
+        self.last_error = api_diagnostic(data, cookies, self.challenge_secrets)
         return f"兑换失败: {self.last_error}", False
 
 

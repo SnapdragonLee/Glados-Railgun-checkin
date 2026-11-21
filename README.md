@@ -4,6 +4,8 @@
 
 改动重点、验证结果及对应 PR 见 [变更日志](CHANGELOG.md)。
 
+当前运行方式（2026-11-21）：本仓库 Actions 工作流已暂停。补齐 challenge 协议后的实测仍被 Turnstile 拒绝，日常签到改为打开 [官网签到页](https://glados.one/console/checkin)，在网页中完成验证并确认签到结果。以下 Actions 配置保留供后续恢复自动化时使用。
+
 ## 功能
 
 - 每天北京时间 09:17 和 15:17 自动运行
@@ -66,6 +68,10 @@ cookie-for-account-1&cookie-for-account-2
 - 代码验证：Push 和 Pull Request 自动运行测试
 - 排查失败：查看 Actions 的错误注解、运行摘要中的 API code 和脱敏原因
 - 积分兑换：成功签到且达到门槛才兑换；今日已签到不兑换，每份 Cookie 每轮最多尝试一次兑换
+
+签到前先获取 challenge，等待 2.5 秒后携带 `nonce` 和 `proof` 提交 JSON。challenge 获取失败时停止该域名的签到，并在 Actions 中保留原因。设备平台恢复会重新获取 challenge。
+
+`repeated=true` 的响应记为今日已签到，即使 `code=0` 也跳过兑换。返回 `code=5` 或 `reason=turnstile` 时，需要在官网浏览器完成验证并手动签到；脚本报告失败。`code=-2` 的认证失败应重新登录并更新 Cookie。
 
 ## 本地测试
 

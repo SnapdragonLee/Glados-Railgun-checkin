@@ -1,5 +1,16 @@
 # 变更日志
 
+## 2026-11-21 — 补齐 challenge 协议，转为官网手动签到
+
+PR：[SnapdragonLee/Glados-Railgun-checkin#4](https://github.com/SnapdragonLee/Glados-Railgun-checkin/pull/4)
+
+- 移植上游 [`7bdf822`](https://github.com/Devilstore/Glados-Railgun-checkin/commit/7bdf82255532dd1317aadde594244b743d408763) 的 challenge 获取、2.5 秒等待和 SHA-256 proof；使用同一个 Cookie、对应平台 UA 和 JSON 签到请求。设备恢复重新获取 challenge。
+- 参考 [`4d3e1e5`](https://github.com/Devilstore/Glados-Railgun-checkin/commit/4d3e1e5baea76086c43d7c02c2401b5639d2d715) 更新 `repeated`、`checkedIn` 和本次积分解析。`repeated=true,code=0` 作为重复签到处理，跳过兑换；明确业务拒绝保留失败状态。
+- challenge 获取失败时停止该域名的签到；Cookie、nonce、proof 在后续错误日志、Actions 摘要和注解中统一脱敏。保留 POST 无通用重试、域名白名单、拒绝重定向、兑换门槛和失败退出码。
+- 本地 75 个 pytest 通过，`git diff --check` 通过；独立协议与隐私复核发现的脱敏缺口已修正并添加回归测试。
+- [Actions 实测 44901235974](https://github.com/SnapdragonLee/Glados-Railgun-checkin/actions/runs/44901235974)：75 个测试通过；两个域名均成功获取 challenge 并提交新协议请求，但仍返回 `code=5 / reason=turnstile`，签到未记录。兑换配置为 `off`，未兑换。
+- 按约定退回官网手动签到，仓库工作流已设为 `disabled_manually`；本次未刷新 Cookie 或更改兑换配置。协议改动保留在 PR #4，尚未合并到 master，不能将测试通过描述为自动签到恢复。
+
 ## 2026-10-10 — 恢复签到与多域名验证
 
 PR：[SnapdragonLee/Glados-Railgun-checkin#3](https://github.com/SnapdragonLee/Glados-Railgun-checkin/pull/3)
